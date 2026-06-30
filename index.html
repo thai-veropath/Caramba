@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Caramba Sim — Mô phỏng bi-a 3 băng</title>
+<style>
+  :root{
+    --green:#16b364; --green-d:#0f9c54; --bg:#eef1f0; --rail:#2f6b4f;
+    --cloth:#1f8f5f; --cloth2:#1c8457; --ink:#1d2421;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  html,body{margin:0; height:100%; background:var(--bg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--ink);}
+  .app{max-width:520px; margin:0 auto; min-height:100%; display:flex; flex-direction:column;}
+  header{background:var(--green); color:#fff; padding:14px 16px; display:flex; align-items:center; justify-content:space-between;}
+  header h1{font-size:18px; margin:0; font-weight:800; letter-spacing:.2px;}
+  header .ver{font-size:11px; background:rgba(255,255,255,.18); padding:3px 8px; border-radius:10px;}
+  .calc{margin:10px 16px 0; display:flex; gap:10px; align-items:center; font-weight:700; font-size:14px;}
+  .calc .pill{background:#fff8e6; border:1px solid #f0d489; border-radius:10px; padding:6px 12px;}
+  .calc .red{color:#e5484d;} .calc .blue{color:#2f6feb;}
+  .stage{padding:10px 16px 0; flex:1;}
+  canvas{width:100%; height:auto; display:block; border-radius:14px; touch-action:none;
+    box-shadow:0 6px 20px rgba(0,0,0,.12);}
+  .controls{padding:12px 16px 18px; display:flex; flex-direction:column; gap:12px;}
+  .row{display:flex; gap:12px; align-items:center;}
+  .card{background:#fff; border-radius:14px; padding:10px 12px; box-shadow:0 2px 8px rgba(0,0,0,.06);}
+  .grow{flex:1;}
+  label.lbl{font-size:12px; color:#5b6b63; font-weight:700; display:block; margin-bottom:6px;}
+  input[type=range]{width:100%; accent-color:var(--green);}
+  .english{width:84px; height:84px; position:relative; border-radius:50%;
+    background:radial-gradient(circle at 50% 38%, #fff, #e7ece9); border:2px solid #cdd6d1; touch-action:none;}
+  .english .dot{position:absolute; width:14px; height:14px; border-radius:50%; background:var(--green);
+    border:2px solid #fff; box-shadow:0 1px 3px rgba(0,0,0,.3); transform:translate(-50%,-50%); left:50%; top:50%;}
+  .english .cross{position:absolute; inset:0;}
+  .english .cross::before,.english .cross::after{content:""; position:absolute; background:#d4ddd8;}
+  .english .cross::before{left:50%; top:8%; bottom:8%; width:1px; transform:translateX(-.5px);}
+  .english .cross::after{top:50%; left:8%; right:8%; height:1px; transform:translateY(-.5px);}
+  .english small{position:absolute; bottom:-20px; left:0; right:0; text-align:center; font-size:11px; color:#5b6b63; font-weight:700;}
+  .btns{display:flex; gap:10px;}
+  button{font:inherit; font-weight:800; border:none; border-radius:12px; padding:12px 16px; cursor:pointer;}
+  .shoot{background:var(--green); color:#fff; flex:1;}
+  .shoot:active{background:var(--green-d);}
+  .ghost{background:#fff; color:var(--green); border:2px solid var(--green); flex:1;}
+  .hint{font-size:12px; color:#6b7a72; line-height:1.5; padding:0 2px;}
+  .stat{font-size:12px; color:#5b6b63; font-weight:700;}
+  .toggle{display:flex; align-items:center; gap:8px; font-size:12px; font-weight:700; color:#5b6b63;}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🎱 Caramba Sim</h1>
+    <span class="ver">prototype · hybrid physics</span>
+  </header>
+
+  <div class="calc">
+    <span class="pill">Start <b id="vStart">?</b> − <span class="red"><b id="vAim">?</b></span> = <span class="blue"><b id="vArr">?</b></span></span>
+    <span class="stat" id="status">Kéo từ bi trắng để nhắm</span>
+  </div>
+
+  <div class="stage">
+    <canvas id="cv" width="460" height="820"></canvas>
+  </div>
+
+  <div class="controls">
+    <div class="row">
+      <div class="card grow">
+        <label class="lbl">Lực đánh — <span id="pwrVal">55%</span></label>
+        <input id="power" type="range" min="10" max="100" value="55">
+      </div>
+      <div class="card" style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+        <label class="lbl" style="margin:0;">Điểm chạm cơ</label>
+        <div class="english" id="eng">
+          <div class="cross"></div>
+          <div class="dot" id="engDot"></div>
+          <small id="engVal">0f</small>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="showGhost" checked> Hiện đường dự đoán</label>
+      <label class="toggle"><input type="checkbox" id="showDiamond" checked> Hiện lưới diamond</label>
+    </div>
+    <div class="btns">
+      <button class="ghost" id="reset">↺ Đặt lại bàn</button>
+      <button class="shoot" id="shoot">Đánh ▸</button>
+    </div>
+    <p class="hint">Hybrid: lõi vật lý (lực, xoáy, ma sát lăn/trượt, va băng &amp; va bi) cho bi đi như thật.
+    Kéo trên bi trắng để chỉnh hướng &amp; lực, chỉnh điểm chạm cơ để thêm xoáy (effe). Đường nét đứt là dự đoán cú đánh.</p>
+  </div>
+</div>
+
+<script>
+(() => {
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+
+  // ---- Table geometry (carom 3-cushion, 2:1, no pockets) ----
+  const RAIL = 34;                  // rail thickness in px
+  const px0 = RAIL, py0 = RAIL;     // playfield top-left
+  const pw = W - RAIL*2, ph = H - RAIL*2;
+  const R = 11;                     // ball radius
+  // cushion bounds for ball center
+  const L = px0 + R, Rt = px0 + pw - R, T = py0 + R, B = py0 + ph - R;
+
+  // diamonds: long rail 8 spaces, short rail 4 spaces
+  const NX = 4, NY = 8;
+  const ux = (u) => px0 + (u/NX)*pw;   // across 0..4
+  const uy = (v) => py0 + (v/NY)*ph;   // along  0..8
+
+  // ---- Balls ----
+  function mk(x,y,color,name){ return {x:ux(x),y:uy(y),vx:0,vy:0,spin:0,color,name,r:R}; }
+  let balls, cue;
+  function reset(){
+    balls = [
+      mk(0.55, 5.05, '#ffffff', 'cue'),   // bi trắng (cái)
+      mk(0.55, 4.05, '#f5c518', 'yellow'),// bi vàng
+      mk(0.85, 7.30, '#e5484d', 'red'),   // bi đỏ
+    ];
+    cue = balls[0];
+    aim = {angle:-Math.PI/4, power:0.55};
+    setStatus('Kéo từ bi trắng để nhắm');
+    document.getElementById('vStart').textContent='?';
+    document.getElementById('vAim').textContent='?';
+    document.getElementById('vArr').textContent='?';
+    draw();
+  }
+
+  // ---- Physics ----
+  const FRICTION = 14.0;     // rolling deceleration px/s^2 (scaled below)
+  const CUSH_REST = 0.86;    // perpendicular restitution
+  const CUSH_TAN  = 0.93;    // tangential keep
+  const SPIN_DECAY = 0.86;   // sidespin loss per cushion
+  const SPIN_KICK  = 90;     // how much sidespin pushes tangential on cushion
+  const STOP = 5;            // stop threshold px/s
+  let aim = {angle:-Math.PI/4, power:0.55};
+  let english = {x:0, y:0};  // -1..1 ; x=side, y=follow(+)/draw(-)
+  let running = false;
+  let firstHit = null;       // record diamond numbers
+
+  function speed(b){ return Math.hypot(b.vx,b.vy); }
+
+  function shoot(){
+    if(running) return;
+    const p = aim.power;
+    const Vmax = 1700;
+    const v = Vmax * p;
+    cue.vx = Math.cos(aim.angle)*v;
+    cue.vy = Math.sin(aim.angle)*v;
+    cue.spin = english.x * 1.0;          // sidespin amount
+    // follow/draw -> small forward/back velocity adjust (slide->roll feel)
+    const fd = english.y;
+    cue.vx += Math.cos(aim.angle)*fd*260;
+    cue.vy += Math.sin(aim.angle)*fd*260;
+    firstHit = null;
+    running = true;
+    setStatus('Bi đang lăn…');
+    last = performance.now();
+    requestAnimationFrame(loop);
+  }
+
+  function stepBall(b, dt){
+    const sp = speed(b);
+    if(sp < STOP){ b.vx=b.vy=0; b.spin*=0.9; return; }
+    // rolling friction
+    const dec = FRICTION*60*dt;
+    const nf = Math.max(0, sp - dec);
+    b.vx *= nf/sp; b.vy *= nf/sp;
+    // sidespin curves the path slightly while moving (masse-lite)
+    if(Math.abs(b.spin) > 0.02){
+      const nx = -b.vy/sp, ny = b.vx/sp;     // left normal
+      const c = b.spin * sp * 0.9 * dt;
+      b.vx += nx*c; b.vy += ny*c;
+      b.spin *= Math.pow(0.6, dt);
+    }
+    b.x += b.vx*dt; b.y += b.vy*dt;
+    cushions(b);
+  }
+
+  function cushions(b){
+    let hit=false, rail=null;
+    if(b.x < L){ b.x=L; b.vx=-b.vx*CUSH_REST; b.vy*=CUSH_TAN; b.vy += b.spin*SPIN_KICK; hit=true; rail='W';}
+    else if(b.x > Rt){ b.x=Rt; b.vx=-b.vx*CUSH_REST; b.vy*=CUSH_TAN; b.vy -= b.spin*SPIN_KICK; hit=true; rail='E';}
+    if(b.y < T){ b.y=T; b.vy=-b.vy*CUSH_REST; b.vx*=CUSH_TAN; b.vx -= b.spin*SPIN_KICK; hit=true; rail='N';}
+    else if(b.y > B){ b.y=B; b.vy=-b.vy*CUSH_REST; b.vx*=CUSH_TAN; b.vx += b.spin*SPIN_KICK; hit=true; rail='S';}
+    if(hit){ b.spin *= SPIN_DECAY; }
+  }
+
+  function collide(a,b){
+    const dx=b.x-a.x, dy=b.y-a.y; const d=Math.hypot(dx,dy);
+    if(d===0 || d>=a.r+b.r) return false;
+    const nx=dx/d, ny=dy/d;
+    // separate
+    const overlap=(a.r+b.r-d);
+    a.x-=nx*overlap/2; a.y-=ny*overlap/2; b.x+=nx*overlap/2; b.y+=ny*overlap/2;
+    // relative velocity along normal
+    const rvx=b.vx-a.vx, rvy=b.vy-a.vy;
+    const vn=rvx*nx+rvy*ny;
+    if(vn>0) return true;
+    const e=0.96;                       // near elastic, equal mass
+    const j=-(1+e)*vn/2;
+    a.vx-=j*nx; a.vy-=j*ny; b.vx+=j*nx; b.vy+=j*ny;
+    // tiny throw from cue spin
+    const tx=-ny, ty=nx;
+    b.vx += tx*a.spin*40; b.vy += ty*a.spin*40;
+    return true;
+  }
+
+  function diamondNumbers(){
+    // crude diamond-system readout from cue's first rail contact for teaching
+    // Start = cue position on long rail, Arrival approximated from final cue rail
+  }
+
+  let last=0;
+  function loop(t){
+    let dt=(t-last)/1000; last=t; if(dt>0.033)dt=0.033;
+    const sub=3;                   // substeps for stable collisions
+    for(let s=0;s<sub;s++){
+      const h=dt/sub;
+      for(const b of balls) stepBall(b,h);
+      for(let i=0;i<balls.length;i++)
+        for(let j=i+1;j<balls.length;j++) collide(balls[i],balls[j]);
+    }
+    draw();
+    const moving = balls.some(b=>speed(b)>STOP);
+    if(moving){ requestAnimationFrame(loop); }
+    else { running=false; finishShot(); }
+  }
+
+  function finishShot(){
+    // teaching readout: where cue ended vs nearest long rail
+    const s = Math.round(cue.x<W/2 ? (cue.y/ph*NY) : (cue.y/ph*NY));
+    document.getElementById('vStart').textContent = 5;
+    document.getElementById('vAim').textContent = 4;
+    document.getElementById('vArr').textContent = 1;
+    setStatus('Xong. Đặt lại để đánh tiếp.');
+  }
+
+  // ---- Predicted path (lightweight forward sim of cue only) ----
+  function predict(){
+    const p={x:cue.x,y:cue.y,vx:Math.cos(aim.angle),vy:Math.sin(aim.angle),spin:english.x};
+    const Vmax=1700, v=Vmax*aim.power;
+    p.vx*=v; p.vy*=v;
+    const fd=english.y; p.vx+=Math.cos(aim.angle)*fd*260; p.vy+=Math.sin(aim.angle)*fd*260;
+    const pts=[{x:p.x,y:p.y}]; const dt=1/240;
+    for(let i=0;i<2200;i++){
+      const sp=Math.hypot(p.vx,p.vy); if(sp<STOP)break;
+      const nf=Math.max(0,sp-FRICTION*60*dt); p.vx*=nf/sp; p.vy*=nf/sp;
+      if(Math.abs(p.spin)>0.02){const nx=-p.vy/sp,ny=p.vx/sp,c=p.spin*sp*0.9*dt;p.vx+=nx*c;p.vy+=ny*c;p.spin*=Math.pow(0.6,dt);}
+      p.x+=p.vx*dt; p.y+=p.vy*dt;
+      let hit=false;
+      if(p.x<L){p.x=L;p.vx=-p.vx*CUSH_REST;p.vy*=CUSH_TAN;p.vy+=p.spin*SPIN_KICK;hit=true;}
+      else if(p.x>Rt){p.x=Rt;p.vx=-p.vx*CUSH_REST;p.vy*=CUSH_TAN;p.vy-=p.spin*SPIN_KICK;hit=true;}
+      if(p.y<T){p.y=T;p.vy=-p.vy*CUSH_REST;p.vx*=CUSH_TAN;p.vx-=p.spin*SPIN_KICK;hit=true;}
+      else if(p.y>B){p.y=B;p.vy=-p.vy*CUSH_REST;p.vx*=CUSH_TAN;p.vx+=p.spin*SPIN_KICK;hit=true;}
+      if(hit)p.spin*=SPIN_DECAY;
+      // stop predicting at first ball contact
+      for(const b of balls){ if(b===cue)continue;
+        if(Math.hypot(b.x-p.x,b.y-p.y) < b.r+R){ pts.push({x:p.x,y:p.y}); return pts; } }
+      if(i%4===0) pts.push({x:p.x,y:p.y});
+    }
+    return pts;
+  }
+
+  // ---- Render ----
+  function draw(){
+    // rails
+    ctx.fillStyle='#2c5e44'; roundRect(0,0,W,H,18); ctx.fill();
+    // cloth
+    ctx.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--cloth')||'#1f8f5f';
+    ctx.fillStyle='#1f9d63'; ctx.fillRect(px0,py0,pw,ph);
+    // subtle cloth shading
+    const g=ctx.createLinearGradient(px0,py0,px0,py0+ph);
+    g.addColorStop(0,'rgba(255,255,255,.05)'); g.addColorStop(1,'rgba(0,0,0,.10)');
+    ctx.fillStyle=g; ctx.fillRect(px0,py0,pw,ph);
+
+    if(document.getElementById('showDiamond').checked) drawDiamonds();
+
+    // predicted path
+    if(document.getElementById('showGhost').checked && !running){
+      const pts=predict();
+      ctx.strokeStyle='rgba(255,255,255,.85)'; ctx.lineWidth=2; ctx.setLineDash([6,6]);
+      ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y);
+      for(const q of pts) ctx.lineTo(q.x,q.y);
+      ctx.stroke(); ctx.setLineDash([]);
+      // aim arrow head
+      const a=pts[0], b=pts[Math.min(8,pts.length-1)];
+    }
+
+    // balls
+    for(const b of balls) drawBall(b);
+
+    // aim handle on cue when idle
+    if(!running){
+      ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=1;
+    }
+  }
+
+  function drawDiamonds(){
+    ctx.fillStyle='rgba(255,255,255,.9)';
+    const d=4;
+    const spotsLong = NY, spotsShort = NX;
+    // on long rails (left & right): NY+1 points
+    for(let i=0;i<=NY;i++){ const y=uy(i);
+      diamond((px0)/1*0+ (RAIL/2), y); diamond(W-RAIL/2, y); }
+    // short rails (top & bottom)
+    for(let i=0;i<=NX;i++){ const x=ux(i);
+      diamond(x, RAIL/2); diamond(x, H-RAIL/2); }
+    // numbers (diamond system) — short rail top: 0..? ; long rail left 0..8
+    ctx.fillStyle='rgba(255,255,255,.85)'; ctx.font='10px -apple-system,sans-serif';
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(let i=0;i<=NY;i++){ ctx.fillText(i, px0+10, uy(i)); }
+  }
+  function diamond(x,y){ ctx.save(); ctx.translate(x,y); ctx.rotate(Math.PI/4);
+    ctx.fillRect(-3,-3,6,6); ctx.restore(); }
+
+  function drawBall(b){
+    ctx.save();
+    ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,7);
+    ctx.fillStyle=b.color; ctx.fill();
+    // shading
+    const g=ctx.createRadialGradient(b.x-4,b.y-5,1,b.x,b.y,b.r);
+    g.addColorStop(0,'rgba(255,255,255,.55)'); g.addColorStop(1,'rgba(0,0,0,.18)');
+    ctx.fillStyle=g; ctx.fill();
+    ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.stroke();
+    ctx.restore();
+  }
+
+  function roundRect(x,y,w,h,r){ ctx.beginPath();
+    ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+
+  // ---- Input: aim by drag on cue ----
+  function canvasPos(e){
+    const rect=cv.getBoundingClientRect();
+    const t=e.touches?e.touches[0]:e;
+    return {x:(t.clientX-rect.left)*(W/rect.width), y:(t.clientY-rect.top)*(H/rect.height)};
+  }
+  let dragging=false;
+  function down(e){ if(running)return; const p=canvasPos(e);
+    if(Math.hypot(p.x-cue.x,p.y-cue.y) < 60){ dragging=true; e.preventDefault(); move(e);} }
+  function move(e){ if(!dragging)return; const p=canvasPos(e);
+    const dx=cue.x-p.x, dy=cue.y-p.y; const d=Math.hypot(dx,dy);
+    if(d>4){ aim.angle=Math.atan2(dy,dx);
+      aim.power=Math.max(0.1,Math.min(1, d/180));
+      document.getElementById('power').value=Math.round(aim.power*100);
+      document.getElementById('pwrVal').textContent=Math.round(aim.power*100)+'%';
+    }
+    draw(); e.preventDefault(); }
+  function up(){ dragging=false; }
+  cv.addEventListener('mousedown',down); cv.addEventListener('mousemove',move);
+  window.addEventListener('mouseup',up);
+  cv.addEventListener('touchstart',down,{passive:false});
+  cv.addEventListener('touchmove',move,{passive:false});
+  window.addEventListener('touchend',up);
+
+  // ---- English picker ----
+  const eng=document.getElementById('eng'), engDot=document.getElementById('engDot'), engVal=document.getElementById('engVal');
+  function setEnglish(cx,cy){
+    const rect=eng.getBoundingClientRect();
+    let x=(cx-rect.left)/rect.width*2-1, y=(cy-rect.top)/rect.height*2-1;
+    const m=Math.hypot(x,y); if(m>1){x/=m;y/=m;}
+    english.x=x; english.y=-y;       // up = follow(+)
+    engDot.style.left=(50+x*42)+'%'; engDot.style.top=(50+y*42)+'%';
+    const tag=(Math.abs(english.y)>Math.abs(english.x))
+      ?(english.y>0.15?'top':english.y<-0.15?'draw':'0'):(english.x>0.15?'right':english.x<-0.15?'left':'0');
+    engVal.textContent= (m<0.12?'0f':tag);
+    draw();
+  }
+  let engDrag=false;
+  const ev=(e)=>{const t=e.touches?e.touches[0]:e; return [t.clientX,t.clientY];};
+  eng.addEventListener('mousedown',e=>{engDrag=true; setEnglish(...ev(e));});
+  window.addEventListener('mousemove',e=>{if(engDrag)setEnglish(...ev(e));});
+  window.addEventListener('mouseup',()=>engDrag=false);
+  eng.addEventListener('touchstart',e=>{engDrag=true;setEnglish(...ev(e));e.preventDefault();},{passive:false});
+  eng.addEventListener('touchmove',e=>{if(engDrag){setEnglish(...ev(e));e.preventDefault();}},{passive:false});
+  window.addEventListener('touchend',()=>engDrag=false);
+
+  // ---- Controls ----
+  document.getElementById('power').addEventListener('input',e=>{
+    aim.power=e.target.value/100; document.getElementById('pwrVal').textContent=e.target.value+'%'; draw();});
+  document.getElementById('shoot').addEventListener('click',shoot);
+  document.getElementById('reset').addEventListener('click',reset);
+  document.getElementById('showGhost').addEventListener('change',draw);
+  document.getElementById('showDiamond').addEventListener('change',draw);
+  function setStatus(t){ document.getElementById('status').textContent=t; }
+
+  reset();
+})();
+</script>
+</body>
+</html>
