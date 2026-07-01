@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>Caramba Sim — Mô phỏng bi-a 3 băng</title>
+<title>Caramba Sim — Mô phỏng bi-a 3 băng (event-based)</title>
 <style>
   :root{ --green:#16b364; --green-d:#0f9c54; --bg:#eef1f0; --ink:#1d2421; }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
@@ -49,7 +49,7 @@
 <div class="app">
   <header>
     <h1>🎱 Caramba Sim</h1>
-    <span class="ver">v0.6 · Han 2005 cushion</span>
+    <span class="ver">v1.0 · event-based · Mathavan 2010</span>
   </header>
 
   <div class="calc">
@@ -65,7 +65,7 @@
     <div class="row">
       <div class="card grow">
         <label class="lbl">Lực đánh — <span id="pwrVal">55%</span></label>
-        <input id="power" type="range" min="8" max="100" value="55">
+        <input id="power" type="range" min="5" max="100" value="55">
         <div class="row" style="margin-top:6px; gap:14px;">
           <label class="toggle"><input type="checkbox" id="showGhost" checked> Đường dự đoán</label>
           <label class="toggle"><input type="checkbox" id="showDiamond" checked> Lưới diamond</label>
@@ -87,274 +87,235 @@
   </div>
 </div>
 
+<script src="engine.js"></script>
 <script>
 (() => {
+  const E = window.CarambaEngine;
+  const { TABLE, BALL } = E;
   const cv = document.getElementById('cv');
   const ctx = cv.getContext('2d');
   const W = cv.width, H = cv.height;
 
-  // ================= TABLE (carom 3-cushion, 2:1, no pockets) =================
+  // ---- table <-> canvas mapping (portrait: table length is vertical) ----
   const RAIL = 34;
-  const px0 = RAIL, py0 = RAIL, pw = W - RAIL*2, ph = H - RAIL*2;
-  const R = 11;                                   // ball radius (px)
-  const L = px0+R, Rt = px0+pw-R, T = py0+R, B = py0+ph-R;   // center bounds
+  const px0 = RAIL, py0 = RAIL, pw = W - RAIL * 2, ph = H - RAIL * 2;
+  const S = pw / TABLE.W;                     // px per meter (ph/TABLE.L identical: 2:1)
+  const toCanvas = (x, y) => [px0 + x * S, py0 + (TABLE.L - y) * S];
+  const toTable = (cx, cy) => [(cx - px0) / S, TABLE.L - (cy - py0) / S];
+  const Rpx = BALL.R * S;
   const NX = 4, NY = 8;
-  const ux = u => px0 + (u/NX)*pw;
-  const uy = v => py0 + (v/NY)*ph;
 
-  // ================= PHYSICS ENGINE (validated) =================
-  // Each ball: linear velocity (vx,vy) + angular velocity (wx,wy,wz) rad/s.
-  // wx,wy = horizontal spin (follow/draw/roll), wz = vertical spin (english).
-  const SLIDE_DECEL = 1800;   // cloth sliding friction (px/s^2)
-  const ROLL_DECEL  = 400;    // rolling resistance (px/s^2) — tuned: 100% ≈ 8-10 bands
-  const SPIN_DECEL  = 6.0;    // vertical-spin decay on cloth (rad/s^2)
-  const SLIP_EPS    = 6;      // contact slip below which ball is "rolling"
-  const ROLL_STOP   = 4;      // speed below which ball stops
-  const E_C         = 0.92;   // Han cushion restitution
-  const F_C         = 0.20;   // Han cushion friction (ball–rail)
-  const H_RATIO     = 1.28;   // cushion height / R  (≈ 0.64 · ball diameter)
-  const BALL_E      = 0.95;   // ball-ball restitution
-  const BALL_FRIC   = 0.10;   // inter-ball friction (throw)
-  const MAXTIP      = 0.35;   // max usable tip offset (fraction of R) — miscue limit
-  const Vmax        = 6000;   // cue speed at 100% power (px/s)
+  const V0MAX = 6.5;                          // cue speed at 100% (m/s)
 
-  function strike(b, angle, power, tipX, tipY){
-    const v0 = Vmax*power, dx = Math.cos(angle), dy = Math.sin(angle);
-    b.vx = v0*dx; b.vy = v0*dy;
-    const lx = -dy, ly = dx;                       // "left of travel" unit
-    const A = tipX*MAXTIP, Bt = tipY*MAXTIP;       // tip offsets (fraction of R)
-    const wtop = (5/2)*(v0/R)*Bt;                  // follow(+) / draw(-)
-    b.wx = wtop*lx; b.wy = wtop*ly;
-    b.wz = (5/2)*(v0/R)*A;                         // sidespin (english)
-  }
+  // ---- state ----
+  let balls, cue, aim, english = { x: 0, y: 0 };
+  let anim = null;                            // {result, t0, mapping of balls}
+  let ghost = null;                           // cached prediction
 
-  function stepBall(b, dt){
-    // contact-point slip:  u = v + w x (-R z)
-    const uxx = b.vx - R*b.wy, uyy = b.vy + R*b.wx;
-    const us = Math.hypot(uxx, uyy);
-    if(us > SLIP_EPS){                             // SLIDING: kinetic friction opposes slip
-      const fx = -SLIDE_DECEL*uxx/us, fy = -SLIDE_DECEL*uyy/us;
-      b.vx += fx*dt; b.vy += fy*dt;
-      b.wx += (5/(2*R))*fy*dt;
-      b.wy += (5/(2*R))*(-fx)*dt;
-    } else {                                       // ROLLING
-      const sp = Math.hypot(b.vx, b.vy);
-      if(sp > ROLL_STOP){ const nf = Math.max(0, sp-ROLL_DECEL*dt); b.vx*=nf/sp; b.vy*=nf/sp; }
-      else { b.vx=0; b.vy=0; }
-      b.wy = b.vx/R; b.wx = -b.vy/R;               // slave spin to pure roll
-    }
-    if(b.wz>0) b.wz = Math.max(0, b.wz-SPIN_DECEL*dt);
-    else if(b.wz<0) b.wz = Math.min(0, b.wz+SPIN_DECEL*dt);
-    b.x += b.vx*dt; b.y += b.vy*dt;
-    return cushion(b);
-  }
-
-  // Han (2005) "Dynamics in carom and three-cushion billiards" — ball–cushion
-  // impulse model, ported from pooltool (mass- & scale-independent, so px units OK).
-  // Accounts for the rail contacting the ball ABOVE its centre (height ≈ 0.64·diam),
-  // which is what makes rebound angle depend on speed and side-spin (real english).
-  function hanCushion(b, nx, ny){
-    if(b.vx*nx + b.vy*ny <= 0) return;             // already moving away from rail
-    const psi = Math.atan2(ny, nx);                // rotate into cushion frame (normal → +x)
-    const c1 = Math.cos(-psi), s1 = Math.sin(-psi);
-    let vx = c1*b.vx - s1*b.vy, vy = s1*b.vx + c1*b.vy, vz = 0;
-    let wx = c1*b.wx - s1*b.wy, wy = s1*b.wx + c1*b.wy, wz = b.wz;
-    const th = Math.asin(H_RATIO-1), sT = Math.sin(th), cT = Math.cos(th);
-    const sx = vx*sT - vz*cT + R*wy;               // Eq.14 — slip velocity at contact
-    const sy = -vy - R*wz*cT + R*wx*sT;
-    const cc = -vx*cT;
-    const II = 2/5*R*R, A = 7/2;                    // moment of inertia, 7/2m  (m = 1)
-    const PzE = -(1+E_C)*cc;                        // Eq.17 — normal (restitution) impulse
-    const s0 = Math.hypot(sx, sy);
-    let PxE, PyE;
-    if(s0/A <= F_C*PzE){ PxE = sx/A; PyE = sy/A; }          // Eq.18 stick
-    else { PxE = F_C*PzE*sx/s0; PyE = F_C*PzE*sy/s0; }      // Eq.19 slide
-    const PX = -PxE*sT - PzE*cT, PY = PyE, PZ = PxE*cT - PzE*sT;  // Eq.21-22
-    vx += PX; vy += PY;                            // Eq.23 (m = 1)
-    wx += -R/II*PY*sT; wy += R/II*(PX*sT - PZ*cT); wz += R/II*PY*cT;
-    const c2 = Math.cos(psi), s2 = Math.sin(psi);  // rotate back to table frame
-    b.vx = c2*vx - s2*vy; b.vy = s2*vx + c2*vy;
-    b.wx = c2*wx - s2*wy; b.wy = s2*wx + c2*wy; b.wz = wz;
-  }
-  function cushion(b){
-    let hit = 0;
-    if(b.x < L){ b.x=L; hanCushion(b,-1,0); hit=1; }
-    else if(b.x > Rt){ b.x=Rt; hanCushion(b,1,0); hit=1; }
-    if(b.y < T){ b.y=T; hanCushion(b,0,-1); hit=1; }
-    else if(b.y > B){ b.y=B; hanCushion(b,0,1); hit=1; }
-    return hit;
-  }
-
-  function collide(a, c){
-    const dx = c.x-a.x, dy = c.y-a.y, d = Math.hypot(dx,dy);
-    if(d===0 || d>=2*R) return false;
-    const nx = dx/d, ny = dy/d, tx = -ny, ty = nx;
-    const ov = 2*R-d; a.x-=nx*ov/2; a.y-=ny*ov/2; c.x+=nx*ov/2; c.y+=ny*ov/2;
-    const rvx = c.vx-a.vx, rvy = c.vy-a.vy, vn = rvx*nx+rvy*ny;
-    if(vn > 0) return true;
-    const jn = -(1+BALL_E)*vn/2;                   // normal impulse (equal mass)
-    a.vx-=jn*nx; a.vy-=jn*ny; c.vx+=jn*nx; c.vy+=jn*ny;
-    const slipT = (rvx*tx+rvy*ty) - R*(a.wz + c.wz);   // tangential surface slip (throw)
-    let jt = -(2/7)*slipT;
-    const cap = BALL_FRIC*Math.abs(jn)*3.5;
-    jt = Math.max(-cap, Math.min(cap, jt));
-    a.vx-=jt*tx; a.vy-=jt*ty; c.vx+=jt*tx; c.vy+=jt*ty;
-    a.wz-=(5/(2*R))*jt; c.wz-=(5/(2*R))*jt;
-    return true;
-  }
-
-  const spd = b => Math.hypot(b.vx, b.vy);
-
-  // ================= STATE =================
-  let balls, cue, aim, english = {x:0, y:0}, running = false, bandCount = 0;
-
-  function mk(x,y,color,name){ return {x:ux(x),y:uy(y),vx:0,vy:0,wx:0,wy:0,wz:0,color,name}; }
-  function reset(){
+  function mk(x, y, color, name) { const b = E.mkBall(x, y); b.color = color; b.name = name; return b; }
+  function reset() {
     balls = [
-      mk(0.55, 5.05, '#ffffff', 'cue'),
-      mk(0.55, 4.05, '#f5c518', 'yellow'),
-      mk(0.85, 7.30, '#e5484d', 'red'),
+      mk(TABLE.W * 0.1375, TABLE.L * 0.64375, '#ffffff', 'cue'),
+      mk(TABLE.W * 0.1375, TABLE.L * 0.76875, '#f5c518', 'yellow'),
+      mk(TABLE.W * 0.2125, TABLE.L * 0.3625, '#e5484d', 'red'),
     ];
     cue = balls[0];
-    aim = {angle:-Math.PI/4, power:0.55};
-    running = false; bandCount = 0;
+    aim = { phi: Math.PI / 4, power: 0.55 };
+    anim = null; ghost = null;
     document.getElementById('bandN').textContent = '0';
     setStatus('Kéo từ bi trắng để nhắm');
     draw();
   }
 
-  function shoot(){
-    if(running) return;
-    strike(cue, aim.angle, aim.power, english.x, english.y);
-    running = true; bandCount = 0;
-    document.getElementById('bandN').textContent = '0';
-    setStatus('Bi đang lăn…');
-    last = performance.now();
-    requestAnimationFrame(loop);
+  // English mapping: UI right (+x) = right english = pooltool a NEGATIVE.
+  const MAX_TIP = 0.5;
+  function strikeParams() {
+    return {
+      V0: V0MAX * aim.power,
+      a: -english.x * MAX_TIP,
+      b: english.y * MAX_TIP,
+    };
   }
 
-  let last = 0;
-  function loop(t){
-    let dt = (t-last)/1000; last = t; if(dt>0.033) dt = 0.033;
-    const sub = 6;
-    for(let s=0; s<sub; s++){
-      const h = dt/sub;
-      for(const b of balls){ const hit = stepBall(b, h); if(b===cue && hit) bumpBand(); }
-      for(let i=0;i<balls.length;i++) for(let j=i+1;j<balls.length;j++) collide(balls[i], balls[j]);
+  function runPrediction() {
+    const clones = balls.map(b => ({ ...b }));
+    const p = strikeParams();
+    E.strike(clones[0], p.V0, aim.phi, p.a, p.b);
+    const res = E.simulateShot(clones, { maxEvents: 3000, maxT: 60 });
+    // sample paths
+    const paths = balls.map(() => []);
+    const n = 260;
+    for (let k = 0; k <= n; k++) {
+      const t = res.duration * k / n;
+      for (let i = 0; i < balls.length; i++) {
+        const s = res.positionAt(i, t);
+        paths[i].push([s.x, s.y]);
+      }
     }
-    draw();
-    if(balls.some(b=>spd(b)>ROLL_STOP)) requestAnimationFrame(loop);
-    else { running=false; setStatus('Xong — '+bandCount+' băng. Đặt lại để đánh tiếp.'); }
+    return { paths };
   }
-  function bumpBand(){ bandCount++; document.getElementById('bandN').textContent = bandCount; }
 
-  // ================= PREDICTED PATH (cue only, same physics) =================
-  function predict(){
-    const p = {x:cue.x, y:cue.y, vx:0, vy:0, wx:0, wy:0, wz:0};
-    strike(p, aim.angle, aim.power, english.x, english.y);
-    const pts = [{x:p.x,y:p.y}]; const dt = 1/240;
-    for(let i=0; i<2600; i++){
-      stepBall(p, dt);
-      let stop=false;
-      for(const b of balls){ if(b===cue) continue;
-        if(Math.hypot(b.x-p.x, b.y-p.y) < 2*R){ stop=true; break; } }
-      if(i%3===0 || stop) pts.push({x:p.x,y:p.y});
-      if(stop || spd(p)<ROLL_STOP) break;
+  function shoot() {
+    if (anim) return;
+    const sim = balls.map(b => ({ ...b }));
+    const p = strikeParams();
+    E.strike(sim[0], p.V0, aim.phi, p.a, p.b);
+    const result = E.simulateShot(sim, { maxEvents: 3000, maxT: 60 });
+    anim = { result, start: performance.now() };
+    setStatus('Bi đang chạy…');
+    requestAnimationFrame(tick);
+  }
+
+  function tick(now) {
+    if (!anim) return;
+    const t = (now - anim.start) / 1000;
+    const { result } = anim;
+    const tq = Math.min(t, result.duration);
+    for (let i = 0; i < balls.length; i++) {
+      const s = result.positionAt(i, tq);
+      balls[i].x = s.x; balls[i].y = s.y;
     }
-    return pts;
-  }
-
-  // ================= RENDER =================
-  function draw(){
-    ctx.fillStyle = '#2c5e44'; roundRect(0,0,W,H,16); ctx.fill();
-    ctx.fillStyle = '#1f9d63'; ctx.fillRect(px0,py0,pw,ph);
-    const g = ctx.createLinearGradient(px0,py0,px0,py0+ph);
-    g.addColorStop(0,'rgba(255,255,255,.05)'); g.addColorStop(1,'rgba(0,0,0,.10)');
-    ctx.fillStyle = g; ctx.fillRect(px0,py0,pw,ph);
-
-    if(document.getElementById('showDiamond').checked) drawDiamonds();
-
-    if(document.getElementById('showGhost').checked && !running){
-      const pts = predict();
-      ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2; ctx.setLineDash([6,6]);
-      ctx.beginPath(); ctx.moveTo(pts[0].x, pts[0].y);
-      for(const q of pts) ctx.lineTo(q.x, q.y);
-      ctx.stroke(); ctx.setLineDash([]);
+    const bands = result.events.filter(e => e.type === 'cushion' && e.i === 0 && e.t <= tq).length;
+    document.getElementById('bandN').textContent = bands;
+    draw(true);
+    if (t < result.duration) requestAnimationFrame(tick);
+    else {
+      // commit final states
+      for (let i = 0; i < balls.length; i++) {
+        const s = result.positionAt(i, result.duration);
+        Object.assign(balls[i], { x: s.x, y: s.y, vx: 0, vy: 0, wx: 0, wy: 0, wz: 0, state: 0 });
+      }
+      anim = null; ghost = null;
+      setStatus('Xong — ' + bands + ' băng. Đặt lại hoặc đánh tiếp.');
+      draw();
     }
-    for(const b of balls) drawBall(b);
   }
 
-  function drawDiamonds(){
+  // ---- render ----
+  function draw(inFlight = false) {
+    ctx.fillStyle = '#2c5e44'; roundRect(0, 0, W, H, 16); ctx.fill();
+    ctx.fillStyle = '#1f9d63'; ctx.fillRect(px0, py0, pw, ph);
+    const grad = ctx.createLinearGradient(px0, py0, px0, py0 + ph);
+    grad.addColorStop(0, 'rgba(255,255,255,.05)'); grad.addColorStop(1, 'rgba(0,0,0,.10)');
+    ctx.fillStyle = grad; ctx.fillRect(px0, py0, pw, ph);
+
+    if (document.getElementById('showDiamond').checked) drawDiamonds();
+
+    if (!inFlight && document.getElementById('showGhost').checked) {
+      if (!ghost) ghost = runPrediction();
+      // object ball paths (faint, their color)
+      for (let i = 1; i < balls.length; i++) drawPath(ghost.paths[i], balls[i].color, 0.5, [4, 5]);
+      drawPath(ghost.paths[0], 'rgba(255,255,255,.9)', 2, [6, 6]);
+    }
+    for (const b of balls) drawBall(b);
+  }
+
+  function drawPath(pts, color, width, dash) {
+    if (!pts || pts.length < 2) return;
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.setLineDash(dash);
+    ctx.beginPath();
+    let [cx0, cy0] = toCanvas(pts[0][0], pts[0][1]);
+    ctx.moveTo(cx0, cy0);
+    for (const [x, y] of pts) { const [cx, cy] = toCanvas(x, y); ctx.lineTo(cx, cy); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  function drawDiamonds() {
     ctx.fillStyle = 'rgba(255,255,255,.9)';
-    for(let i=0;i<=NY;i++){ const y=uy(i); diamond(RAIL/2,y); diamond(W-RAIL/2,y); }
-    for(let i=0;i<=NX;i++){ const x=ux(i); diamond(x,RAIL/2); diamond(x,H-RAIL/2); }
-    ctx.fillStyle='rgba(255,255,255,.85)'; ctx.font='10px -apple-system,sans-serif';
-    ctx.textAlign='center'; ctx.textBaseline='middle';
-    for(let i=0;i<=NY;i++) ctx.fillText(i, px0+10, uy(i));
+    for (let i = 0; i <= NY; i++) { const y = py0 + i * ph / NY; diamond(RAIL / 2, y); diamond(W - RAIL / 2, y); }
+    for (let i = 0; i <= NX; i++) { const x = px0 + i * pw / NX; diamond(x, RAIL / 2); diamond(x, H - RAIL / 2); }
+    ctx.fillStyle = 'rgba(255,255,255,.85)'; ctx.font = '10px -apple-system,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    for (let i = 0; i <= NY; i++) ctx.fillText(i, px0 + 10, py0 + i * ph / NY);
   }
-  function diamond(x,y){ ctx.save(); ctx.translate(x,y); ctx.rotate(Math.PI/4); ctx.fillRect(-3,-3,6,6); ctx.restore(); }
+  function diamond(x, y) { ctx.save(); ctx.translate(x, y); ctx.rotate(Math.PI / 4); ctx.fillRect(-3, -3, 6, 6); ctx.restore(); }
 
-  function drawBall(b){
-    ctx.beginPath(); ctx.arc(b.x,b.y,R,0,7); ctx.fillStyle=b.color; ctx.fill();
-    const g = ctx.createRadialGradient(b.x-4,b.y-5,1,b.x,b.y,R);
-    g.addColorStop(0,'rgba(255,255,255,.55)'); g.addColorStop(1,'rgba(0,0,0,.18)');
-    ctx.fillStyle=g; ctx.fill();
-    ctx.lineWidth=1; ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.stroke();
+  function drawBall(b) {
+    const [cx, cy] = toCanvas(b.x, b.y);
+    ctx.beginPath(); ctx.arc(cx, cy, Rpx, 0, 7); ctx.fillStyle = b.color; ctx.fill();
+    const g = ctx.createRadialGradient(cx - 4, cy - 5, 1, cx, cy, Rpx);
+    g.addColorStop(0, 'rgba(255,255,255,.55)'); g.addColorStop(1, 'rgba(0,0,0,.18)');
+    ctx.fillStyle = g; ctx.fill();
+    ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.stroke();
   }
-  function roundRect(x,y,w,h,r){ ctx.beginPath();
-    ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
-    ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath(); }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+  }
 
-  // ================= INPUT: drag on cue to aim =================
-  function canvasPos(e){
+  // ---- input: drag on cue to aim ----
+  function canvasPos(e) {
     const rect = cv.getBoundingClientRect();
     const t = e.touches ? e.touches[0] : e;
-    return {x:(t.clientX-rect.left)*(W/rect.width), y:(t.clientY-rect.top)*(H/rect.height)};
+    return [(t.clientX - rect.left) * (W / rect.width), (t.clientY - rect.top) * (H / rect.height)];
   }
-  let dragging=false;
-  function down(e){ if(running) return; const p=canvasPos(e);
-    if(Math.hypot(p.x-cue.x,p.y-cue.y) < 70){ dragging=true; e.preventDefault(); move(e); } }
-  function move(e){ if(!dragging) return; const p=canvasPos(e);
-    const dx=cue.x-p.x, dy=cue.y-p.y, d=Math.hypot(dx,dy);
-    if(d>4){ aim.angle=Math.atan2(dy,dx); aim.power=Math.max(0.08,Math.min(1,d/170));
-      document.getElementById('power').value=Math.round(aim.power*100);
-      document.getElementById('pwrVal').textContent=Math.round(aim.power*100)+'%'; }
-    draw(); e.preventDefault(); }
-  function up(){ dragging=false; }
-  cv.addEventListener('mousedown',down); cv.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
-  cv.addEventListener('touchstart',down,{passive:false}); cv.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',up);
-
-  // ================= ENGLISH PICKER =================
-  const eng=document.getElementById('eng'), engDot=document.getElementById('engDot'), engVal=document.getElementById('engVal');
-  function setEnglish(cx,cy){
-    const rect=eng.getBoundingClientRect();
-    let x=(cx-rect.left)/rect.width*2-1, y=(cy-rect.top)/rect.height*2-1;
-    const m=Math.hypot(x,y); if(m>1){x/=m;y/=m;}
-    english.x=x; english.y=-y;                      // up = follow(+)
-    engDot.style.left=(50+x*42)+'%'; engDot.style.top=(50+y*42)+'%';
-    let tag='tâm';
-    if(m>=0.12){ const parts=[];
-      if(english.y>0.2) parts.push('follow'); else if(english.y<-0.2) parts.push('draw');
-      if(english.x>0.2) parts.push('phải'); else if(english.x<-0.2) parts.push('trái');
-      tag = parts.join(' ') || 'tâm'; }
-    engVal.textContent=tag; draw();
+  let dragging = false;
+  function down(e) {
+    if (anim) return;
+    const [mx, my] = canvasPos(e);
+    const [bx, by] = toCanvas(cue.x, cue.y);
+    if (Math.hypot(mx - bx, my - by) < 70) { dragging = true; e.preventDefault(); move(e); }
   }
-  let engDrag=false; const ev=e=>{const t=e.touches?e.touches[0]:e; return [t.clientX,t.clientY];};
-  eng.addEventListener('mousedown',e=>{engDrag=true;setEnglish(...ev(e));});
-  window.addEventListener('mousemove',e=>{if(engDrag)setEnglish(...ev(e));});
-  window.addEventListener('mouseup',()=>engDrag=false);
-  eng.addEventListener('touchstart',e=>{engDrag=true;setEnglish(...ev(e));e.preventDefault();},{passive:false});
-  eng.addEventListener('touchmove',e=>{if(engDrag){setEnglish(...ev(e));e.preventDefault();}},{passive:false});
-  window.addEventListener('touchend',()=>engDrag=false);
+  function move(e) {
+    if (!dragging) return;
+    const [mx, my] = canvasPos(e);
+    const [tx, ty] = toTable(mx, my);
+    const dx = cue.x - tx, dy = cue.y - ty;
+    const d = Math.hypot(dx, dy);
+    if (d > 0.015) {
+      aim.phi = Math.atan2(dy, dx);
+      aim.power = Math.max(0.05, Math.min(1, d / 0.62));
+      document.getElementById('power').value = Math.round(aim.power * 100);
+      document.getElementById('pwrVal').textContent = Math.round(aim.power * 100) + '%';
+      ghost = null;
+    }
+    draw(); e.preventDefault();
+  }
+  function up() { dragging = false; }
+  cv.addEventListener('mousedown', down); cv.addEventListener('mousemove', move);
+  window.addEventListener('mouseup', up);
+  cv.addEventListener('touchstart', down, { passive: false });
+  cv.addEventListener('touchmove', move, { passive: false });
+  window.addEventListener('touchend', up);
 
-  // ================= CONTROLS =================
-  document.getElementById('power').addEventListener('input',e=>{
-    aim.power=e.target.value/100; document.getElementById('pwrVal').textContent=e.target.value+'%'; draw();});
-  document.getElementById('shoot').addEventListener('click',shoot);
-  document.getElementById('reset').addEventListener('click',reset);
-  document.getElementById('showGhost').addEventListener('change',draw);
-  document.getElementById('showDiamond').addEventListener('change',draw);
-  function setStatus(t){ document.getElementById('status').textContent=t; }
+  // ---- english picker ----
+  const eng = document.getElementById('eng'), engDot = document.getElementById('engDot'), engVal = document.getElementById('engVal');
+  function setEnglish(cx, cy) {
+    const rect = eng.getBoundingClientRect();
+    let x = (cx - rect.left) / rect.width * 2 - 1, y = (cy - rect.top) / rect.height * 2 - 1;
+    const m = Math.hypot(x, y); if (m > 1) { x /= m; y /= m; }
+    english.x = x; english.y = -y;
+    engDot.style.left = (50 + x * 42) + '%'; engDot.style.top = (50 + y * 42) + '%';
+    let tag = 'tâm';
+    if (m >= 0.12) {
+      const parts = [];
+      if (english.y > 0.2) parts.push('follow'); else if (english.y < -0.2) parts.push('draw');
+      if (english.x > 0.2) parts.push('phải'); else if (english.x < -0.2) parts.push('trái');
+      tag = parts.join(' ') || 'tâm';
+    }
+    engVal.textContent = tag; ghost = null; draw();
+  }
+  let engDrag = false;
+  const ev = e => { const t = e.touches ? e.touches[0] : e; return [t.clientX, t.clientY]; };
+  eng.addEventListener('mousedown', e => { engDrag = true; setEnglish(...ev(e)); });
+  window.addEventListener('mousemove', e => { if (engDrag) setEnglish(...ev(e)); });
+  window.addEventListener('mouseup', () => engDrag = false);
+  eng.addEventListener('touchstart', e => { engDrag = true; setEnglish(...ev(e)); e.preventDefault(); }, { passive: false });
+  eng.addEventListener('touchmove', e => { if (engDrag) { setEnglish(...ev(e)); e.preventDefault(); } }, { passive: false });
+  window.addEventListener('touchend', () => engDrag = false);
+
+  // ---- controls ----
+  document.getElementById('power').addEventListener('input', e => {
+    aim.power = e.target.value / 100;
+    document.getElementById('pwrVal').textContent = e.target.value + '%';
+    ghost = null; draw();
+  });
+  document.getElementById('shoot').addEventListener('click', shoot);
+  document.getElementById('reset').addEventListener('click', reset);
+  document.getElementById('showGhost').addEventListener('change', () => draw());
+  document.getElementById('showDiamond').addEventListener('change', () => draw());
+  function setStatus(t) { document.getElementById('status').textContent = t; }
 
   reset();
 })();
