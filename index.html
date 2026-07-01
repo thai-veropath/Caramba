@@ -145,7 +145,7 @@
   function shoot(){
     if(running) return;
     const p = aim.power;
-    const Vmax = 1700;
+    const Vmax = 2400;   // tăng tầm đi: quãng đường ~ v^2 nên x1.41 vận tốc => x2 quãng đường
     const v = Vmax * p;
     cue.vx = Math.cos(aim.angle)*v;
     cue.vy = Math.sin(aim.angle)*v;
@@ -241,7 +241,7 @@
   // ---- Predicted path (lightweight forward sim of cue only) ----
   function predict(){
     const p={x:cue.x,y:cue.y,vx:Math.cos(aim.angle),vy:Math.sin(aim.angle),spin:english.x};
-    const Vmax=1700, v=Vmax*aim.power;
+    const Vmax=2400, v=Vmax*aim.power;
     p.vx*=v; p.vy*=v;
     const fd=english.y; p.vx+=Math.cos(aim.angle)*fd*260; p.vy+=Math.sin(aim.angle)*fd*260;
     const pts=[{x:p.x,y:p.y}]; const dt=1/240;
