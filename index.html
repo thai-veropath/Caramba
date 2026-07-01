@@ -49,7 +49,7 @@
 <div class="app">
   <header>
     <h1>🎱 Caramba Sim</h1>
-    <span class="ver">v0.5 · vật lý ép-phê</span>
+    <span class="ver">v0.6 · Han 2005 cushion</span>
   </header>
 
   <div class="calc">
@@ -106,16 +106,17 @@
   // Each ball: linear velocity (vx,vy) + angular velocity (wx,wy,wz) rad/s.
   // wx,wy = horizontal spin (follow/draw/roll), wz = vertical spin (english).
   const SLIDE_DECEL = 1800;   // cloth sliding friction (px/s^2)
-  const ROLL_DECEL  = 440;    // rolling resistance (px/s^2) — tuned: 100% ≈ 8-10 bands
+  const ROLL_DECEL  = 400;    // rolling resistance (px/s^2) — tuned: 100% ≈ 8-10 bands
   const SPIN_DECEL  = 6.0;    // vertical-spin decay on cloth (rad/s^2)
   const SLIP_EPS    = 6;      // contact slip below which ball is "rolling"
   const ROLL_STOP   = 4;      // speed below which ball stops
-  const CUSH_E      = 0.90;   // rail normal restitution
-  const RAIL_FRIC   = 0.55;   // rail tangential grip (fraction of full 2/7 grip)
+  const E_C         = 0.92;   // Han cushion restitution
+  const F_C         = 0.20;   // Han cushion friction (ball–rail)
+  const H_RATIO     = 1.28;   // cushion height / R  (≈ 0.64 · ball diameter)
   const BALL_E      = 0.95;   // ball-ball restitution
   const BALL_FRIC   = 0.10;   // inter-ball friction (throw)
-  const MAXTIP      = 0.5;    // max usable tip offset (fraction of R)
-  const Vmax        = 5000;   // cue speed at 100% power (px/s)
+  const MAXTIP      = 0.35;   // max usable tip offset (fraction of R) — miscue limit
+  const Vmax        = 6000;   // cue speed at 100% power (px/s)
 
   function strike(b, angle, power, tipX, tipY){
     const v0 = Vmax*power, dx = Math.cos(angle), dy = Math.sin(angle);
@@ -148,26 +149,39 @@
     return cushion(b);
   }
 
+  // Han (2005) "Dynamics in carom and three-cushion billiards" — ball–cushion
+  // impulse model, ported from pooltool (mass- & scale-independent, so px units OK).
+  // Accounts for the rail contacting the ball ABOVE its centre (height ≈ 0.64·diam),
+  // which is what makes rebound angle depend on speed and side-spin (real english).
+  function hanCushion(b, nx, ny){
+    if(b.vx*nx + b.vy*ny <= 0) return;             // already moving away from rail
+    const psi = Math.atan2(ny, nx);                // rotate into cushion frame (normal → +x)
+    const c1 = Math.cos(-psi), s1 = Math.sin(-psi);
+    let vx = c1*b.vx - s1*b.vy, vy = s1*b.vx + c1*b.vy, vz = 0;
+    let wx = c1*b.wx - s1*b.wy, wy = s1*b.wx + c1*b.wy, wz = b.wz;
+    const th = Math.asin(H_RATIO-1), sT = Math.sin(th), cT = Math.cos(th);
+    const sx = vx*sT - vz*cT + R*wy;               // Eq.14 — slip velocity at contact
+    const sy = -vy - R*wz*cT + R*wx*sT;
+    const cc = -vx*cT;
+    const II = 2/5*R*R, A = 7/2;                    // moment of inertia, 7/2m  (m = 1)
+    const PzE = -(1+E_C)*cc;                        // Eq.17 — normal (restitution) impulse
+    const s0 = Math.hypot(sx, sy);
+    let PxE, PyE;
+    if(s0/A <= F_C*PzE){ PxE = sx/A; PyE = sy/A; }          // Eq.18 stick
+    else { PxE = F_C*PzE*sx/s0; PyE = F_C*PzE*sy/s0; }      // Eq.19 slide
+    const PX = -PxE*sT - PzE*cT, PY = PyE, PZ = PxE*cT - PzE*sT;  // Eq.21-22
+    vx += PX; vy += PY;                            // Eq.23 (m = 1)
+    wx += -R/II*PY*sT; wy += R/II*(PX*sT - PZ*cT); wz += R/II*PY*cT;
+    const c2 = Math.cos(psi), s2 = Math.sin(psi);  // rotate back to table frame
+    b.vx = c2*vx - s2*vy; b.vy = s2*vx + c2*vy;
+    b.wx = c2*wx - s2*wy; b.wy = s2*wx + c2*wy; b.wz = wz;
+  }
   function cushion(b){
     let hit = 0;
-    if(b.x < L || b.x > Rt){                       // vertical rail (normal = x)
-      const sgn = b.x<L ? +1 : -1;
-      b.x = b.x<L ? L : Rt;
-      b.vx = -b.vx*CUSH_E;
-      const slip = b.vy + sgn*R*b.wz;              // tangential surface slip at rail
-      b.vy += -(2/7)*slip*RAIL_FRIC;               // sphere 2/7 grip law
-      b.wz += -sgn*(5/(7*R))*slip*RAIL_FRIC;
-      hit = 1;
-    }
-    if(b.y < T || b.y > B){                         // horizontal rail (normal = y)
-      const sgn = b.y<T ? +1 : -1;
-      b.y = b.y<T ? T : B;
-      b.vy = -b.vy*CUSH_E;
-      const slip = b.vx - sgn*R*b.wz;
-      b.vx += -(2/7)*slip*RAIL_FRIC;
-      b.wz += +sgn*(5/(7*R))*slip*RAIL_FRIC;
-      hit = 1;
-    }
+    if(b.x < L){ b.x=L; hanCushion(b,-1,0); hit=1; }
+    else if(b.x > Rt){ b.x=Rt; hanCushion(b,1,0); hit=1; }
+    if(b.y < T){ b.y=T; hanCushion(b,0,-1); hit=1; }
+    else if(b.y > B){ b.y=B; hanCushion(b,0,1); hit=1; }
     return hit;
   }
 
