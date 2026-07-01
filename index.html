@@ -21,8 +21,12 @@
   .calc .pill b{color:var(--green-d);}
   .calc .stat{color:#5b6b63; font-weight:700;}
   .stage{flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; padding:6px 14px;}
-  canvas{max-width:100%; max-height:100%; width:auto; height:auto; aspect-ratio:46/82;
+  canvas{max-width:100%; max-height:100%; width:auto; height:auto; aspect-ratio:460/852;
     display:block; border-radius:12px; touch-action:none; box-shadow:0 5px 16px rgba(0,0,0,.14);}
+  .mode{display:flex; gap:0; border:2px solid var(--green); border-radius:10px; overflow:hidden;}
+  .mode button{flex:1; border:none; border-radius:0; padding:8px 6px; font-size:11px;
+    background:#fff; color:var(--green); white-space:nowrap;}
+  .mode button.on{background:var(--green); color:#fff;}
   .controls{padding:6px 14px calc(10px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:8px; flex:0 0 auto;}
   .row{display:flex; gap:10px; align-items:center;}
   .card{background:#fff; border-radius:12px; padding:8px 10px; box-shadow:0 2px 8px rgba(0,0,0,.06);}
@@ -49,7 +53,7 @@
 <div class="app">
   <header>
     <h1>🎱 Caramba Sim</h1>
-    <span class="ver">v1.0 · event-based · Mathavan 2010</span>
+    <span class="ver">v1.1 · event-based · Mathavan 2010</span>
   </header>
 
   <div class="calc">
@@ -58,7 +62,7 @@
   </div>
 
   <div class="stage">
-    <canvas id="cv" width="460" height="820"></canvas>
+    <canvas id="cv" width="460" height="852"></canvas>
   </div>
 
   <div class="controls">
@@ -81,6 +85,10 @@
       </div>
     </div>
     <div class="btns">
+      <div class="mode" style="flex:1;">
+        <button id="modeAim" class="on">🎯 Nhắm</button>
+        <button id="modePlace">✋ Đặt bi</button>
+      </div>
       <button class="ghost" id="reset">↺ Đặt lại</button>
       <button class="shoot" id="shoot">Đánh ▸</button>
     </div>
@@ -142,14 +150,21 @@
     const p = strikeParams();
     E.strike(clones[0], p.V0, aim.phi, p.a, p.b);
     const res = E.simulateShot(clones, { maxEvents: 3000, maxT: 60 });
-    // sample paths
+    // Sample per event segment and ALWAYS include the exact event-boundary
+    // states — cushion vertices land exactly on the contact line instead of
+    // being corner-cut by uniform time sampling.
+    const bounds = [0, ...res.events.map(e => e.t), res.duration];
     const paths = balls.map(() => []);
-    const n = 260;
-    for (let k = 0; k <= n; k++) {
-      const t = res.duration * k / n;
-      for (let i = 0; i < balls.length; i++) {
-        const s = res.positionAt(i, t);
-        paths[i].push([s.x, s.y]);
+    for (let s = 0; s < bounds.length - 1; s++) {
+      const ta = bounds[s], tb = bounds[s + 1];
+      if (tb - ta < 1e-9) continue;
+      const k = Math.min(24, Math.max(2, Math.ceil((tb - ta) * 20)));
+      for (let j = 0; j <= k; j++) {
+        const t = ta + (tb - ta) * j / k;
+        for (let i = 0; i < balls.length; i++) {
+          const st = res.positionAt(i, t);
+          paths[i].push([st.x, st.y]);
+        }
       }
     }
     return { paths };
@@ -250,16 +265,44 @@
     const t = e.touches ? e.touches[0] : e;
     return [(t.clientX - rect.left) * (W / rect.width), (t.clientY - rect.top) * (H / rect.height)];
   }
-  let dragging = false;
+  let mode = 'aim';                 // 'aim' | 'place'
+  let dragging = false, placing = null;
+  function setMode(m) {
+    mode = m;
+    document.getElementById('modeAim').classList.toggle('on', m === 'aim');
+    document.getElementById('modePlace').classList.toggle('on', m === 'place');
+    setStatus(m === 'aim' ? 'Kéo trên bàn để nhắm (kéo ra sau bi như ná cao su)'
+                          : 'Kéo một bi bất kỳ để đặt lại vị trí');
+  }
+  function ballAt(mx, my) {
+    for (const b of balls) {
+      const [bx, by] = toCanvas(b.x, b.y);
+      if (Math.hypot(mx - bx, my - by) < Math.max(28, Rpx * 2)) return b;
+    }
+    return null;
+  }
   function down(e) {
     if (anim) return;
     const [mx, my] = canvasPos(e);
-    const [bx, by] = toCanvas(cue.x, cue.y);
-    if (Math.hypot(mx - bx, my - by) < 70) { dragging = true; e.preventDefault(); move(e); }
+    if (mode === 'place') {
+      placing = ballAt(mx, my);
+      if (placing) { e.preventDefault(); move(e); }
+      return;
+    }
+    dragging = true; e.preventDefault(); move(e);
   }
   function move(e) {
-    if (!dragging) return;
     const [mx, my] = canvasPos(e);
+    if (mode === 'place' && placing) {
+      let [tx, ty] = toTable(mx, my);
+      tx = Math.min(Math.max(tx, BALL.R), TABLE.W - BALL.R);
+      ty = Math.min(Math.max(ty, BALL.R), TABLE.L - BALL.R);
+      // refuse positions overlapping another ball
+      const ok = balls.every(o => o === placing || Math.hypot(o.x - tx, o.y - ty) >= 2 * BALL.R + 1e-4);
+      if (ok) { placing.x = tx; placing.y = ty; ghost = null; }
+      draw(); e.preventDefault(); return;
+    }
+    if (!dragging) return;
     const [tx, ty] = toTable(mx, my);
     const dx = cue.x - tx, dy = cue.y - ty;
     const d = Math.hypot(dx, dy);
@@ -272,7 +315,9 @@
     }
     draw(); e.preventDefault();
   }
-  function up() { dragging = false; }
+  function up() { dragging = false; placing = null; }
+  document.getElementById('modeAim').addEventListener('click', () => setMode('aim'));
+  document.getElementById('modePlace').addEventListener('click', () => setMode('place'));
   cv.addEventListener('mousedown', down); cv.addEventListener('mousemove', move);
   window.addEventListener('mouseup', up);
   cv.addEventListener('touchstart', down, { passive: false });
